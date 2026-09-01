@@ -1,183 +1,243 @@
 from fastmcp import FastMCP
+
 import json
 import os
 import random
-import sqlite3
 from typing import Any, Dict, List, Optional
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "expenses.db")
-
-mcp = FastMCP("Simple testing of FastMCP", "This is a simple test of the FastMCP library.")
+from supabase import Client, create_client
 
 
-def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# ============================================================
+# Supabase configuration
+# ============================================================
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if not SUPABASE_URL:
+    raise RuntimeError("SUPABASE_URL environment variable is not set")
+
+if not SUPABASE_KEY:
+    raise RuntimeError("SUPABASE_KEY environment variable is not set")
 
 
-def init_db() -> None:
-    conn = get_db_connection()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            amount REAL NOT NULL,
-            description TEXT NOT NULL,
-            category TEXT DEFAULT 'general',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
+supabase: Client = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY,
+)
 
 
-init_db()
+# ============================================================
+# FastMCP server
+# ============================================================
 
+mcp = FastMCP(
+    "Simple testing of FastMCP",
+    "This is a simple test of the FastMCP library.",
+)
+
+
+# ============================================================
+# Basic test tools
+# ============================================================
 
 @mcp.tool
-def random_number_generator():
-    """Generates a random number between 1 and 100.
-
-    args:
-        None
-
-    returns:
-        int: A random integer between 1 and 100.
-    """
+def random_number_generator() -> int:
+    """Generates a random number between 1 and 100."""
     return random.randint(1, 100)
 
 
 @mcp.tool
 def add_numbers(a: int, b: int) -> int:
-    """Adds two numbers and returns the result.
-
-    args:
-        a (int): The first number to add.
-        b (int): The second number to add.
-    returns:
-        int: The sum of the two numbers.
-    """
+    """Adds two numbers and returns the result."""
     return a + b
 
 
 @mcp.tool
 def multiply_numbers(a: int, b: int) -> int:
-    """Multiplies two numbers and returns the result.
-
-    args:
-        a (int): The first number to multiply.
-        b (int): The second number to multiply.
-    returns:
-        int: The product of the two numbers.
-    """
+    """Multiplies two numbers and returns the result."""
     return a * b
 
 
+# ============================================================
+# Expense tools
+# ============================================================
+
 @mcp.tool
-def add_expense(amount: float, description: str, category: str = "general") -> Dict[str, Any]:
-    """Adds an expense record to the SQLite database.
-
-    args:
-        amount (float): Expense amount.
-        description (str): Brief description of the expense.
-        category (str): Optional expense category. Defaults to "general".
-
-    returns:
-        dict: The inserted expense data.
+def add_expense(
+    amount: float,
+    description: str,
+    category: str = "general",
+) -> Dict[str, Any]:
     """
-    conn = get_db_connection()
-    cursor = conn.execute(
-        "INSERT INTO expenses (amount, description, category) VALUES (?, ?, ?)",
-        (amount, description, category),
+    Adds an expense record to Supabase.
+
+    Args:
+        amount: Expense amount.
+        description: Brief description of the expense.
+        category: Expense category. Defaults to "general".
+
+    Returns:
+        The inserted expense record.
+    """
+
+    response = (
+        supabase
+        .table("expenses")
+        .insert({
+            "amount": amount,
+            "description": description,
+            "category": category,
+        })
+        .execute()
     )
-    conn.commit()
-    expense_id = cursor.lastrowid
-    expense = conn.execute(
-        "SELECT id, amount, description, category, created_at FROM expenses WHERE id = ?",
-        (expense_id,),
-    ).fetchone()
-    conn.close()
-    return dict(expense) if expense else {"id": expense_id, "amount": amount, "description": description, "category": category}
+
+    if not response.data:
+        return {
+            "success": False,
+            "message": "Expense could not be created.",
+        }
+
+    return {
+        "success": True,
+        "expense": response.data[0],
+    }
 
 
 @mcp.tool
 def list_expenses() -> List[Dict[str, Any]]:
-    """Returns all expenses from the SQLite database.
-
-    returns:
-        list: A list of all expense records.
     """
-    conn = get_db_connection()
-    rows = conn.execute(
-        "SELECT id, amount, description, category, created_at FROM expenses ORDER BY created_at DESC"
-    ).fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    Returns all expenses from Supabase.
+
+    Returns:
+        List of expense records.
+    """
+
+    response = (
+        supabase
+        .table("expenses")
+        .select("id, amount, description, category, created_at")
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    return response.data or []
 
 
 @mcp.tool
-def get_expense(expense_id: int) -> Optional[Dict[str, Any]]:
-    """Fetches one expense by its ID.
-
-    args:
-        expense_id (int): The ID of the expense to fetch.
-
-    returns:
-        dict | None: The matching expense or None if it does not exist.
+def get_expense(
+    expense_id: int,
+) -> Optional[Dict[str, Any]]:
     """
-    conn = get_db_connection()
-    row = conn.execute(
-        "SELECT id, amount, description, category, created_at FROM expenses WHERE id = ?",
-        (expense_id,),
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    Fetches one expense by ID.
+
+    Args:
+        expense_id: The ID of the expense to fetch.
+
+    Returns:
+        The matching expense or None.
+    """
+
+    response = (
+        supabase
+        .table("expenses")
+        .select("id, amount, description, category, created_at")
+        .eq("id", expense_id)
+        .execute()
+    )
+
+    if not response.data:
+        return None
+
+    return response.data[0]
 
 
 @mcp.tool
 def total_expenses() -> float:
-    """Returns the total of all recorded expenses.
-
-    returns:
-        float: Total amount spent.
     """
-    conn = get_db_connection()
-    result = conn.execute("SELECT COALESCE(SUM(amount), 0) as total FROM expenses").fetchone()
-    conn.close()
-    return float(result["total"]) if result and result["total"] is not None else 0.0
+    Returns the total of all recorded expenses.
+
+    Returns:
+        Total amount spent.
+    """
+
+    response = (
+        supabase
+        .table("expenses")
+        .select("amount")
+        .execute()
+    )
+
+    if not response.data:
+        return 0.0
+
+    total = sum(
+        float(row["amount"])
+        for row in response.data
+        if row.get("amount") is not None
+    )
+
+    return total
 
 
 @mcp.tool
-def delete_expense(expense_id: int) -> Dict[str, Any]:
-    """Deletes an expense from the database by ID.
-
-    args:
-        expense_id (int): The expense ID to delete.
-
-    returns:
-        dict: Confirmation payload with the deleted ID.
+def delete_expense(
+    expense_id: int,
+) -> Dict[str, Any]:
     """
-    conn = get_db_connection()
-    existing = conn.execute("SELECT id FROM expenses WHERE id = ?", (expense_id,)).fetchone()
-    if existing is None:
-        conn.close()
-        return {"success": False, "message": f"Expense with id {expense_id} not found."}
+    Deletes an expense by ID.
 
-    conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
-    conn.commit()
-    conn.close()
-    return {"success": True, "deleted_id": expense_id}
+    Args:
+        expense_id: The expense ID to delete.
 
+    Returns:
+        Confirmation payload.
+    """
+
+    # First check whether the expense exists
+    existing = (
+        supabase
+        .table("expenses")
+        .select("id")
+        .eq("id", expense_id)
+        .execute()
+    )
+
+    if not existing.data:
+        return {
+            "success": False,
+            "message": f"Expense with id {expense_id} not found.",
+        }
+
+    # Delete
+    (
+        supabase
+        .table("expenses")
+        .delete()
+        .eq("id", expense_id)
+        .execute()
+    )
+
+    return {
+        "success": True,
+        "deleted_id": expense_id,
+    }
+
+
+# ============================================================
+# Server resource
+# ============================================================
 
 @mcp.resource("info://server")
-def server_info():
+def server_info() -> str:
     """Returns information about the server."""
+
     info = {
         "server_name": "FastMCP Test Server",
-        "version": "1.0.0",
-        "description": "This server is used for testing the FastMCP library.",
+        "version": "2.0.0",
+        "description": "FastMCP server using Supabase PostgreSQL.",
+        "database": "Supabase PostgreSQL",
         "tools": [
             "random_number_generator",
             "add_numbers",
@@ -194,5 +254,13 @@ def server_info():
     return json.dumps(info, indent=4)
 
 
+# ============================================================
+# Local development
+# ============================================================
+
 if __name__ == "__main__":
-    mcp.run(transport="http", host="localhost", port=8000)
+    mcp.run(
+        transport="http",
+        host="localhost",
+        port=8000,
+    )
